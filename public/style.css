@@ -1,7 +1,30 @@
+* { box-sizing: border-box; }
 body { padding: 0; margin: 0; font-family: arial, sans-serif, helvetica; color: #29606F }
 html, body { height: 100vh; width: 100vw; }
 #map { width: 100% }
-.places { width: 100%; font-size: 0.9em; padding-top: 2px; padding-bottom: 2px; border-bottom: thin solid #29606F; }
+
+#menu-init { width: 300px; margin: auto; }
+#menu-init svg { width: 100%; }
+#menu-init input { width: 100%; }
+#menu-init button { 
+ width: 100%; 
+ display: inline-block;
+ padding: 6px 12px;
+ font-weight: 400;
+ line-height: 1.42857;
+ text-align: center;
+ white-space: nowrap;
+ vertical-align: middle;
+ cursor: pointer;
+ -moz-user-select: none;
+ background-image: none;
+ margin-top: 5px;
+ border: 1px solid #29606F;
+ background-color: #29606F;
+ color: #FFF;
+ }
+
+#menu-init p { width: 100%; font-size: 0.9em; padding-top: 2px; padding-bottom: 2px; border-bottom: thin solid #29606F; }
 .popup-title { font-size: 1.2em; font-weight: bold; width: 100%; text-align: center }
 .popup-main a { text-decoration: none; font-weight: bold;  }
 
@@ -17,5 +40,14 @@ html, body { height: 100vh; width: 100vw; }
 	padding: 10px;
 }
 .map-menu-main-cell path { fill: #29606F; }
+
 .visible { background-color: #29606F; }
 .visible path { fill: white; }
+
+.map-menu-more { width: 100%; }
+.map-menu-more-item { width: 100%; text-align: center; border-bottom: thin solid #29606F; padding: 10px; }
+
+.map-menu-legend { width: 100%; padding: 10px; }
+.map-menu-legend-item { width: 150px; float: left; display: table; }
+.map-menu-leg-img { display: table-cell; width: 50px; text-align: center; vertical-align: middle; padding: 5px; }
+.map-menu-leg-txt { display: table-cell; width: 100px; text-align: center; vertical-align: middle; padding: 5px; }
