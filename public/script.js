@@ -1,4 +1,304 @@
 (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+function EventEmitter() {
+  this._events = this._events || {};
+  this._maxListeners = this._maxListeners || undefined;
+}
+module.exports = EventEmitter;
+
+// Backwards-compat with node 0.10.x
+EventEmitter.EventEmitter = EventEmitter;
+
+EventEmitter.prototype._events = undefined;
+EventEmitter.prototype._maxListeners = undefined;
+
+// By default EventEmitters will print a warning if more than 10 listeners are
+// added to it. This is a useful default which helps finding memory leaks.
+EventEmitter.defaultMaxListeners = 10;
+
+// Obviously not all Emitters should be limited to 10. This function allows
+// that to be increased. Set to zero for unlimited.
+EventEmitter.prototype.setMaxListeners = function(n) {
+  if (!isNumber(n) || n < 0 || isNaN(n))
+    throw TypeError('n must be a positive number');
+  this._maxListeners = n;
+  return this;
+};
+
+EventEmitter.prototype.emit = function(type) {
+  var er, handler, len, args, i, listeners;
+
+  if (!this._events)
+    this._events = {};
+
+  // If there is no 'error' event listener then throw.
+  if (type === 'error') {
+    if (!this._events.error ||
+        (isObject(this._events.error) && !this._events.error.length)) {
+      er = arguments[1];
+      if (er instanceof Error) {
+        throw er; // Unhandled 'error' event
+      }
+      throw TypeError('Uncaught, unspecified "error" event.');
+    }
+  }
+
+  handler = this._events[type];
+
+  if (isUndefined(handler))
+    return false;
+
+  if (isFunction(handler)) {
+    switch (arguments.length) {
+      // fast cases
+      case 1:
+        handler.call(this);
+        break;
+      case 2:
+        handler.call(this, arguments[1]);
+        break;
+      case 3:
+        handler.call(this, arguments[1], arguments[2]);
+        break;
+      // slower
+      default:
+        args = Array.prototype.slice.call(arguments, 1);
+        handler.apply(this, args);
+    }
+  } else if (isObject(handler)) {
+    args = Array.prototype.slice.call(arguments, 1);
+    listeners = handler.slice();
+    len = listeners.length;
+    for (i = 0; i < len; i++)
+      listeners[i].apply(this, args);
+  }
+
+  return true;
+};
+
+EventEmitter.prototype.addListener = function(type, listener) {
+  var m;
+
+  if (!isFunction(listener))
+    throw TypeError('listener must be a function');
+
+  if (!this._events)
+    this._events = {};
+
+  // To avoid recursion in the case that type === "newListener"! Before
+  // adding it to the listeners, first emit "newListener".
+  if (this._events.newListener)
+    this.emit('newListener', type,
+              isFunction(listener.listener) ?
+              listener.listener : listener);
+
+  if (!this._events[type])
+    // Optimize the case of one listener. Don't need the extra array object.
+    this._events[type] = listener;
+  else if (isObject(this._events[type]))
+    // If we've already got an array, just append.
+    this._events[type].push(listener);
+  else
+    // Adding the second element, need to change to array.
+    this._events[type] = [this._events[type], listener];
+
+  // Check for listener leak
+  if (isObject(this._events[type]) && !this._events[type].warned) {
+    if (!isUndefined(this._maxListeners)) {
+      m = this._maxListeners;
+    } else {
+      m = EventEmitter.defaultMaxListeners;
+    }
+
+    if (m && m > 0 && this._events[type].length > m) {
+      this._events[type].warned = true;
+      console.error('(node) warning: possible EventEmitter memory ' +
+                    'leak detected. %d listeners added. ' +
+                    'Use emitter.setMaxListeners() to increase limit.',
+                    this._events[type].length);
+      if (typeof console.trace === 'function') {
+        // not supported in IE 10
+        console.trace();
+      }
+    }
+  }
+
+  return this;
+};
+
+EventEmitter.prototype.on = EventEmitter.prototype.addListener;
+
+EventEmitter.prototype.once = function(type, listener) {
+  if (!isFunction(listener))
+    throw TypeError('listener must be a function');
+
+  var fired = false;
+
+  function g() {
+    this.removeListener(type, g);
+
+    if (!fired) {
+      fired = true;
+      listener.apply(this, arguments);
+    }
+  }
+
+  g.listener = listener;
+  this.on(type, g);
+
+  return this;
+};
+
+// emits a 'removeListener' event iff the listener was removed
+EventEmitter.prototype.removeListener = function(type, listener) {
+  var list, position, length, i;
+
+  if (!isFunction(listener))
+    throw TypeError('listener must be a function');
+
+  if (!this._events || !this._events[type])
+    return this;
+
+  list = this._events[type];
+  length = list.length;
+  position = -1;
+
+  if (list === listener ||
+      (isFunction(list.listener) && list.listener === listener)) {
+    delete this._events[type];
+    if (this._events.removeListener)
+      this.emit('removeListener', type, listener);
+
+  } else if (isObject(list)) {
+    for (i = length; i-- > 0;) {
+      if (list[i] === listener ||
+          (list[i].listener && list[i].listener === listener)) {
+        position = i;
+        break;
+      }
+    }
+
+    if (position < 0)
+      return this;
+
+    if (list.length === 1) {
+      list.length = 0;
+      delete this._events[type];
+    } else {
+      list.splice(position, 1);
+    }
+
+    if (this._events.removeListener)
+      this.emit('removeListener', type, listener);
+  }
+
+  return this;
+};
+
+EventEmitter.prototype.removeAllListeners = function(type) {
+  var key, listeners;
+
+  if (!this._events)
+    return this;
+
+  // not listening for removeListener, no need to emit
+  if (!this._events.removeListener) {
+    if (arguments.length === 0)
+      this._events = {};
+    else if (this._events[type])
+      delete this._events[type];
+    return this;
+  }
+
+  // emit removeListener for all listeners on all events
+  if (arguments.length === 0) {
+    for (key in this._events) {
+      if (key === 'removeListener') continue;
+      this.removeAllListeners(key);
+    }
+    this.removeAllListeners('removeListener');
+    this._events = {};
+    return this;
+  }
+
+  listeners = this._events[type];
+
+  if (isFunction(listeners)) {
+    this.removeListener(type, listeners);
+  } else if (listeners) {
+    // LIFO order
+    while (listeners.length)
+      this.removeListener(type, listeners[listeners.length - 1]);
+  }
+  delete this._events[type];
+
+  return this;
+};
+
+EventEmitter.prototype.listeners = function(type) {
+  var ret;
+  if (!this._events || !this._events[type])
+    ret = [];
+  else if (isFunction(this._events[type]))
+    ret = [this._events[type]];
+  else
+    ret = this._events[type].slice();
+  return ret;
+};
+
+EventEmitter.prototype.listenerCount = function(type) {
+  if (this._events) {
+    var evlistener = this._events[type];
+
+    if (isFunction(evlistener))
+      return 1;
+    else if (evlistener)
+      return evlistener.length;
+  }
+  return 0;
+};
+
+EventEmitter.listenerCount = function(emitter, type) {
+  return emitter.listenerCount(type);
+};
+
+function isFunction(arg) {
+  return typeof arg === 'function';
+}
+
+function isNumber(arg) {
+  return typeof arg === 'number';
+}
+
+function isObject(arg) {
+  return typeof arg === 'object' && arg !== null;
+}
+
+function isUndefined(arg) {
+  return arg === void 0;
+}
+
+},{}],2:[function(require,module,exports){
 var config = require('./overpass/config')
 var km = config.radius
 var timeout = config.timeout
@@ -32,7 +332,7 @@ module.exports = function(pt, type, callback) {
 }
 
 
-},{"./overpass/config":3,"./overpass/create-url":4,"./overpass/parse":6,"./utils/bbox-km":8,"./utils/get-json":9}],2:[function(require,module,exports){
+},{"./overpass/config":4,"./overpass/create-url":5,"./overpass/parse":7,"./utils/bbox-km":9,"./utils/get-json":10}],3:[function(require,module,exports){
 var read = require('./place/parse')
 var get = require('./utils/get-json')
 
@@ -46,7 +346,7 @@ module.exports = function(place, callback) {
 	})
 }
 
-},{"./place/parse":7,"./utils/get-json":9}],3:[function(require,module,exports){
+},{"./place/parse":8,"./utils/get-json":10}],4:[function(require,module,exports){
 function tourism() {
 	var t = ['aquarium','artwork','attraction','gallery','information','museum','theme_park','viewpoint','zoo']
 	var keyVals = []
@@ -78,7 +378,7 @@ exports.radius = 1.5
 exports.timeout = 30
 
 
-},{}],4:[function(require,module,exports){
+},{}],5:[function(require,module,exports){
 module.exports = function(bb, keyVals, timeout) {
 	return url(bbox(bb), keyVals, timeout)
 }
@@ -119,7 +419,7 @@ function url(bbox, keyVals, timeout) {
 */
 
 
-},{}],5:[function(require,module,exports){
+},{}],6:[function(require,module,exports){
 function getPolys(data) {
 	data.relations.forEach(function(r) {
 		var coords = []
@@ -357,7 +657,7 @@ exports.featuresTourism = featuresTourism
 exports.featuresDrink = featuresDrink
 exports.featuresEat = featuresEat
 
-},{}],6:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
 var get = require('./parse-utils')
 
 exports.tourism = function(data) {
@@ -384,7 +684,7 @@ exports.eat = function(data) {
 	return get.featuresEat(pointFeats)
 }
 
-},{"./parse-utils":5}],7:[function(require,module,exports){
+},{"./parse-utils":6}],8:[function(require,module,exports){
 module.exports = function(data) {
 	var r = []
 	data.forEach(function(d) {
@@ -397,7 +697,7 @@ module.exports = function(data) {
 	return r
 }
 
-},{}],8:[function(require,module,exports){
+},{}],9:[function(require,module,exports){
 module.exports = function(pt, km) {
 	var xMin = pt[0] - getLngDist(pt[1])*km
 	var xMax = pt[0] + getLngDist(pt[1])*km
@@ -442,7 +742,7 @@ function loop(startLat, endLat, startLng, endLng, dist, callback) {
 }
 */
 
-},{}],9:[function(require,module,exports){
+},{}],10:[function(require,module,exports){
 module.exports = function(url, callback) {
 	var request = new XMLHttpRequest()
 	request.open('GET', url, true)
@@ -462,7 +762,7 @@ module.exports = function(url, callback) {
 
 
 
-},{}],10:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 module.exports = function(evt, places) {
 	view(places, function(choices) {
 		ctrl(evt, choices)
@@ -479,7 +779,7 @@ function ctrl(evt, choices) {
 }
 
 function view(places, callback) {
-	var html = '<div id="menu-init">'
+	var html = '<div id="menu-init"><h2>Choose city</h2>'
 	var choices = {}
 	places.forEach(function(p, i) {
 		var id = 'place-' + i
@@ -490,7 +790,7 @@ function view(places, callback) {
 	callback(choices)
 }
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 var main = require('./map-menu/main')
 var more = require('./map-menu/more')
 var legend = require('./map-menu/legend')
@@ -502,7 +802,7 @@ module.exports = function(state, config) {
 	else if(state === 'legend') { legend(config) }	
 }
 
-},{"./map-menu/legend":13,"./map-menu/main":14,"./map-menu/more":15}],12:[function(require,module,exports){
+},{"./map-menu/legend":14,"./map-menu/main":15,"./map-menu/more":16}],13:[function(require,module,exports){
 exports.drink = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19 19" width="30"><title>Drink</title><rect fill="none" x="0" y="0" width="19" height="19"></rect><path fill="#000" transform="translate(2 2)" d="M12,5V2c0,0-1-1-4.5-1S3,2,3,2v3c0.0288,1.3915,0.3706,2.7586,1,4c0.6255,1.4348,0.6255,3.0652,0,4.5c0,0,0,1,3.5,1 s3.5-1,3.5-1c-0.6255-1.4348-0.6255-3.0652,0-4.5C11.6294,7.7586,11.9712,6.3915,12,5z M7.5,13.5 c-0.7966,0.035-1.5937-0.0596-2.36-0.28c0.203-0.7224,0.304-1.4696,0.3-2.22h4.12c-0.004,0.7504,0.097,1.4976,0.3,2.22 C9.0937,13.4404,8.2966,13.535,7.5,13.5z M7.5,5C6.3136,5.0299,5.1306,4.8609,4,4.5v-2C5.131,2.1411,6.3137,1.9722,7.5,2 C8.6863,1.9722,9.869,2.1411,11,2.5v2C9.8694,4.8609,8.6864,5.0299,7.5,5z"></path></svg>'
 
 exports.eat = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19 19" width="30"><title>Eat</title><rect fill="none" x="0" y="0" width="19" height="19"></rect><path fill="#000" transform="translate(2 2)" d="M3.5,0l-1,5.5c-0.1464,0.805,1.7815,1.181,1.75,2L4,14c-0.0384,0.9993,1,1,1,1s1.0384-0.0007,1-1L5.75,7.5 c-0.0314-0.8176,1.7334-1.1808,1.75-2L6.5,0H6l0.25,4L5.5,4.5L5.25,0h-0.5L4.5,4.5L3.75,4L4,0H3.5z M12,0 c-0.7364,0-1.9642,0.6549-2.4551,1.6367C9.1358,2.3731,9,4.0182,9,5v2.5c0,0.8182,1.0909,1,1.5,1L10,14c-0.0905,0.9959,1,1,1,1 s1,0,1-1V0z"></path></svg>'
@@ -513,7 +813,7 @@ exports.menu = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19 19" heig
 
 exports.close = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19 19" height="19" width="19"><title>Close</title><path fill="#000" transform="translate(0 -3)" d="M 4.625 3.125 C 4.3693886 3.1230136 4.1036348 3.2119095 3.90625 3.40625 L 3.21875 4.09375 C 2.8239805 4.4824311 2.7988189 5.1364804 3.1875 5.53125 L 7.40625 9.8125 L 3.1875 14.125 C 2.7988189 14.51977 2.8239804 15.142569 3.21875 15.53125 L 3.90625 16.21875 C 4.3010196 16.607431 4.9550689 16.61352 5.34375 16.21875 L 9.53125 11.96875 L 13.71875 16.21875 C 14.107431 16.61352 14.73023 16.607431 15.125 16.21875 L 15.84375 15.53125 C 16.23852 15.142569 16.232431 14.48852 15.84375 14.09375 L 11.625 9.8125 L 15.84375 5.53125 C 16.232431 5.1364804 16.23852 4.5136811 15.84375 4.125 L 15.125 3.40625 C 14.73023 3.0175689 14.107431 3.0427304 13.71875 3.4375 L 9.53125 7.6875 L 5.34375 3.40625 C 5.1494095 3.2088652 4.8806114 3.1269864 4.625 3.125 z"></path></svg>'
 
-},{}],13:[function(require,module,exports){
+},{}],14:[function(require,module,exports){
 var icon = require('./icons')
 var dom = require('../../dom')
 
@@ -572,7 +872,7 @@ function fix(m) {
 	else { return s[0] + ' ' + s[1] } 
 }
 
-},{"../../dom":19,"./icons":12}],14:[function(require,module,exports){
+},{"../../dom":20,"./icons":13}],15:[function(require,module,exports){
 var icon = require('./icons')
 var dom = require('../../dom')
 
@@ -606,7 +906,7 @@ function visible(n, config) {
 	else { return '' }
 }
 
-},{"../../dom":19,"./icons":12}],15:[function(require,module,exports){
+},{"../../dom":20,"./icons":13}],16:[function(require,module,exports){
 var icon = require('./icons')
 var dom = require('../../dom')
 
@@ -630,7 +930,7 @@ function view(config, callback) {
 	config.menu.className = ''
 	var html = '<div class="map-menu-more">'
 		+ '<div id="map-menu-more-change-city" class="map-menu-more-item"><span>Change city</span></div>'
-		+ '<div id="map-menu-more-legend" class="map-menu-more-item"><span>Map legend</span></div>'
+		+ '<div id="map-menu-more-legend" class="map-menu-more-item"><span>Map symbols</span></div>'
 	+ '</div>'
 	+ '<div class="map-menu-main-row">'
 		+ '<div id="map-menu-main-tourism" class="map-menu-main-cell' + visible('tourism', config) + '">' + icon.tourism + '</div>'
@@ -648,11 +948,11 @@ function visible(n, config) {
 	else { return '' }
 }
 
-},{"../../dom":19,"./icons":12}],16:[function(require,module,exports){
+},{"../../dom":20,"./icons":13}],17:[function(require,module,exports){
 var place = require('../api/get-place')
 var icon = require('./tourist-icon')
-module.exports = function(evt) {
-	view(function() {
+module.exports = function(evt, searchError) {
+	view(searchError, function() {
 		ctrl(evt)
 	})
 }
@@ -661,24 +961,33 @@ function ctrl(evt) {
 	document.getElementById('place-btn').onclick = function() {
 		place(document.getElementById('place').value, function(err, data) { 
 			if(err) { evt.emit('place-search-err', err) }
-			else { evt.emit('place-search-success', data) }
+			else { 
+				if(data.length === 0) { evt.emit('place-search-none') }
+				else { 
+					var five = []
+					if(data.length > 5) { for(i=0;i<6;i++) { five.push(data[i]) } }
+					else { five = data }
+					evt.emit('place-search-success', five) 
+				}
+			}
 		})
 	}
 }
 
-function view(callback) {
+function view(searchError, callback) {
 	var html = '<div id="menu-init">'
 		+ icon
-		+ '<input id="place"/ placeholder="Choose a city"><button id="place-btn">OK</button>'
-	+ '</div>'
+		+ '<input id="place"/ placeholder="Search a city"><button id="place-btn">OK</button>'
+	if(searchError) { html = html + '<p id="info">' + searchError + '</p>' }	
+	html = html + '</div>'
 	document.getElementById('menu').innerHTML = html
 	callback()
 }
 
-},{"../api/get-place":2,"./tourist-icon":17}],17:[function(require,module,exports){
-module.exports = '<svg width="325" height="325" viewBox="0 0 325 325" id="svg2"><rect width="405.08829" height="385.61288" x="-44.793415" y="-40.163723" id="rect3788" style="fill:#ffffff;fill-opacity:1;stroke:none" /><path d="m -17.527859,131.21978 50.636037,-1.94754 0,97.377 16.554089,0 0,-17.52786 22.396708,0.97377 1.94754,17.52786 34.081945,-0.97377 -2.92131,-52.58358 22.39671,0 2.92131,45.76719 27.26556,0 0,-103.21962 39.92457,-1.94754 0,85.69176 38.95079,0.97377 0,-38.9508 26.29179,-87.639293 20.44917,88.613063 -0.97377,36.02949 26.29179,0 -2.92131,-30.18687 42.84588,-4.86885 0,186.96383 -356.3997995,5.84262 -31.1606375,-30.18687 z" id="path3016" style="fill:#ececec;stroke:none" /><g transform="translate(-116.85239,-255.12772)" id="layer1"> <g  transform="matrix(0.92986768,0,0,0.92986768,11.395078,41.641525)"  id="g3972"> <path  d="m 227.28432,447.28081 -1.01015,146.47212 114.14724,-4.04061 -7.07107,-164.65487 z"  id="path3841"  style="fill:#ff8080;stroke:none" /> <path  d="m 360.00001,335.21933 a 87.14286,80 0 1 1 -174.28572,0 87.14286,80 0 1 1 174.28572,0 z"  id="path2985"  style="fill:#e9c6af;fill-opacity:1;stroke:none" /> <path  d="m 384.86813,360.91275 a 36.87057,30.809655 0 1 1 -73.74114,0 36.87057,30.809655 0 1 1 73.74114,0 z"  id="path2987"  style="fill:#e9c6af;fill-opacity:1;stroke:none" /> <path  d="m 311.12698,319.74905 a 17.67767,16.414978 0 1 1 -35.35534,0 17.67767,16.414978 0 1 1 35.35534,0 z"  transform="translate(4.0406102,12.121831)"  id="path3770"  style="fill:#ffffff;fill-opacity:1;stroke:none" /> <path  d="m 311.12698,319.74905 a 17.67767,16.414978 0 1 1 -35.35534,0 17.67767,16.414978 0 1 1 35.35534,0 z"  transform="matrix(0.88571429,0,0,0.87692307,73.94317,38.091036)"  id="path3770-9"  style="fill:#ffffff;fill-opacity:1;stroke:none" /> <path  d="m 260.61936,356.87216 a 6.81853,6.0609159 0 1 1 -13.63706,0 6.81853,6.0609159 0 1 1 13.63706,0 z"  transform="matrix(0.92592595,0,0,1,67.539916,-17.677677)"  id="path3792"  style="fill:#1a1a1a;fill-opacity:1;stroke:none" /> <path  d="m 260.61936,356.87216 a 6.81853,6.0609159 0 1 1 -13.63706,0 6.81853,6.0609159 0 1 1 13.63706,0 z"  transform="matrix(0.74074076,0,0,0.79166667,148.12764,43.412435)"  id="path3792-3"  style="fill:#1a1a1a;fill-opacity:1;stroke:none" /> <path  d="m 240.41631,373.53967 c 13.41351,25.9403 32.63347,39.88059 66.16499,24.24366 -33.01447,3.87457 -46.91691,-13.10034 -66.16499,-24.24366 z"  id="path3821"  style="fill:#ffffff;stroke:none" /> <path  d="m 185.4676,341.09595 c -5.24793,-41.17959 43.5274,-125.94493 141.82182,-71.09691 -64.64882,14.8747 -108.12281,37.3832 -141.82182,71.09691 z"  id="path3823"  style="fill:#c6e9af;stroke:none" /> <path  d="m 250.90562,296.02841 c 25.50022,-8.33989 43.74892,-18.49598 75.10317,-25.5243 54.97782,-34.74037 -29.70035,-40.9468 -75.10317,25.5243 z"  id="path3825"  style="fill:#aade87;stroke:none" /> <path  d="m 253.54829,425.05745 -36.36549,9.09137 c -5.80699,2.56123 -10.64884,0.77933 -18.18275,11.11168 l -31.31473,44.44671 c -4.13951,11.25689 -13.09729,24.11986 10.10153,26.26397 l 98.99495,21.2132 5.05076,-27.27411 -84.85281,-15.15229 27.27412,-37.37565 85.86296,-21.2132 -10.10152,28.28427 c -4.59833,12.04092 3.72362,12.15542 11.11167,13.13198 l 71.72083,21.21321 4.04061,-20.20305 -60.60915,-14.14214 11.11168,-38.3858 c 1.40481,-9.91068 -8.94078,-11.07611 -20.86658,-9.56055 z"  id="path3839"  style="fill:#ff8080;stroke:none" /> <path  d="m 258.09397,409.65262 c -2.13117,7.6565 -3.89752,13.8537 -5.55583,19.61876 6.23402,2.65171 19.22261,8.94785 26.43728,0.6425 -3.82609,-6.66957 -5.18663,-13.33915 -7.24439,-20.00872 z"  id="path3837"  style="fill:#e9c6af;stroke:none" /> <path  d="m 218.21429,554.86218 c -8.60669,-31.89815 -14.86464,-78.74562 23.92857,-126.78571 -25.87029,33.57979 -34.21691,77.059 -23.92857,126.78571 z"  id="path3948"  style="fill:#1a1a1a;stroke:none" /> <path  d="m 261.62951,543.2453 c 51.35056,-28.45225 51.21479,-74.06661 37.37564,-124.24876 20.55396,61.51082 7.78438,102.73775 -37.37564,124.24876 z"  id="path3950"  style="fill:#1a1a1a;stroke:none" /> <path  d="m 278.8021,477.58538 16.16244,38.3858 -12.12183,58.58885 54.54824,3.03046 21.2132,-33.33504 46.46702,7.07107 8.08122,-27.27412 18.18275,-21.2132 -32.32488,-22.22336 0,-47.47717 -22.22336,17.1726 -13.13198,26.26396 -34.34519,-11.11168 -4.04061,20.20305 z"  id="path3835"  style="fill:#e9ddaf;stroke:none" /> <path  d="m 287.14286,513.79075 c 35.2235,4.52367 10.92659,25.01562 -2.85715,20.35715 -18.00691,-8.09325 -5.67077,-14.09388 2.85715,-20.35715 z"  id="path3865"  style="fill:#e9c6af;stroke:none" /> <path  d="m 397.67857,469.86218 c -8.38243,23.04244 7.66187,17.80129 15.89286,21.60714 1.04043,-9.95805 4.21789,-20.84525 -15.89286,-21.60714 z"  id="path3867"  style="fill:#e9c6af;stroke:none" /> <path  d="m 377.29198,450.31126 9.84898,62.882 -22.98097,-36.87057 z"  id="path3952"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="m 329.81481,466.22117 16.92005,58.58885 -21.46574,-39.64849 z"  id="path3954"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="m 358.35162,544.00291 -29.54697,-21.2132 8.5863,54.80078 z"  id="path3956"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="m 227.14286,527.00504 44.64285,6.78571 -45.35714,-2.14285 z"  id="path3960"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="m 210.89286,497.00504 6.96428,1.60714 -0.35714,25.89286 -7.85714,-1.96429 z"  id="path3962"  style="fill:#ff8080;stroke:none" /> <path  d="m 273.92857,567.00504 -4.64286,8.92857 -12.85714,4.28571 -0.71428,7.5 -11.42858,3.92858 -0.71428,-7.14286 -15,5.71428 -1.78572,-3.21428 0.35715,-8.92857 z"  id="path3964"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="m 263.13196,540.86182 12.14286,24.28572 -46.42857,18.57143 -11.42857,-29.28572 z"  id="path3904"  style="fill:#1a1a1a;stroke:none" /> <path  d="m 216.80399,556.88236 0.63135,-2.39911 57.70496,10.48033 -0.88388,2.39911 z"  id="path3924"  style="fill:#1a1a1a;stroke:none" /> <path  d="m 262.41769,543.00468 12.14286,24.28572 -46.42857,18.57143 -11.42857,-29.28572 z"  id="path3904-7"  style="fill:#333333;stroke:none" /> <path  d="m 233.39285,592.89789 a 10.625,9.4642859 0 1 1 -21.25,0 10.625,9.4642859 0 1 1 21.25,0 z"  transform="translate(21.607143,-28.75)"  id="path3926"  style="fill:#1a1a1a;fill-opacity:1;stroke:none" /> <path  d="m 233.39285,592.89789 a 10.625,9.4642859 0 1 1 -21.25,0 10.625,9.4642859 0 1 1 21.25,0 z"  transform="translate(21.160719,-27.14285)"  id="path3926-7"  style="fill:#666666;fill-opacity:1;stroke:none" /> <path  d="m 235.44643,568.34432 c 1.683,4.74813 5.90631,6.47208 12.58928,5.26786 -6.02388,0.38799 -9.63226,-1.86716 -12.58928,-5.26786 z"  id="path3946"  style="fill:#999999;stroke:none" /> <path  d="m 335.87572,389.95465 c -13.0524,-3.03313 -28.88796,-4.50074 -21.2132,-19.1929 0.97154,12.90379 10.24541,16.95177 21.2132,19.1929 z"  id="path3966"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="M 216.42857,269.50504 C 171.08734,315.32935 172.15498,394.28313 258.39286,414.68361 184.9249,374.58139 200.8989,320.73196 216.42857,269.50504 z"  id="path3968"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> <path  d="M 257.32143,414.32647 252.5,428.79075 c 1.80673,1.42857 6.48057,2.85715 10.53571,4.28572 -4.81963,-6.88385 -4.31167,-12.60919 -5.71428,-18.75 z"  id="path3970"  style="opacity:0.07999998;fill:#1a1a1a;stroke:none" /> </g></g></svg>'
+},{"../api/get-place":3,"./tourist-icon":18}],18:[function(require,module,exports){
+module.exports = '<svg width="325" height="325" viewBox="0 0 325 325"><rect style="fill:#ffffff;fill-opacity:1;stroke:none" y="-40.163723" x="-44.793415" height="385.61288" width="405.08829"></rect><path style="fill:#b2793f;stroke:none;fill-opacity:1;opacity:0.2" id="path3016" d="m -17.527859,131.21978 50.636037,-1.94754 0,97.377 16.554089,0 0,-17.52786 22.396708,0.97377 1.94754,17.52786 34.081945,-0.97377 -2.92131,-52.58358 22.39671,0 2.92131,45.76719 27.26556,0 0,-103.21962 39.92457,-1.94754 0,85.69176 38.95079,0.97377 0,-38.9508 26.29179,-87.639293 20.44917,88.613063 -0.97377,36.02949 26.29179,0 -2.92131,-30.18687 42.84588,-4.86885 0,186.96383 -356.3997995,5.84262 -31.1606375,-30.18687 z" ></path><g id="layer1" transform="translate(-116.85239,-255.12772)" ><g   id="g3972"   transform="matrix(0.92986768,0,0,0.92986768,11.395078,41.641525)" ><path style="fill:#ce7668;stroke:none;fill-opacity:1" id="path3841" d="m 227.28432,447.28081 -1.01015,146.47212 114.14724,-4.04061 -7.07107,-164.65487 z" ></path><path style="fill:#e7bd92;fill-opacity:1;stroke:none" id="path2985" d="m 360.00001,335.21933 a 87.14286,80 0 1 1 -174.28572,0 87.14286,80 0 1 1 174.28572,0 z" ></path><path style="fill:#e7bd92;fill-opacity:1;stroke:none" id="path2987" d="m 384.86813,360.91275 a 36.87057,30.809655 0 1 1 -73.74114,0 36.87057,30.809655 0 1 1 73.74114,0 z" ></path><path style="fill:#ffffff;fill-opacity:1;stroke:none" id="path3770" transform="translate(4.0406102,12.121831)" d="m 311.12698,319.74905 a 17.67767,16.414978 0 1 1 -35.35534,0 17.67767,16.414978 0 1 1 35.35534,0 z" ></path><path style="fill:#ffffff;fill-opacity:1;stroke:none" id="path3770-9" transform="matrix(0.88571429,0,0,0.87692307,73.94317,38.091036)" d="m 311.12698,319.74905 a 17.67767,16.414978 0 1 1 -35.35534,0 17.67767,16.414978 0 1 1 35.35534,0 z" ></path><path style="fill:#1a1a1a;fill-opacity:1;stroke:none" id="path3792" transform="matrix(0.92592595,0,0,1,67.539916,-17.677677)" d="m 260.61936,356.87216 a 6.81853,6.0609159 0 1 1 -13.63706,0 6.81853,6.0609159 0 1 1 13.63706,0 z" ></path><path style="fill:#1a1a1a;fill-opacity:1;stroke:none" id="path3792-3" transform="matrix(0.74074076,0,0,0.79166667,148.12764,43.412435)" d="m 260.61936,356.87216 a 6.81853,6.0609159 0 1 1 -13.63706,0 6.81853,6.0609159 0 1 1 13.63706,0 z" ></path><path style="fill:#ffffff;stroke:none" id="path3821" d="m 240.41631,373.53967 c 13.41351,25.9403 32.63347,39.88059 66.16499,24.24366 -33.01447,3.87457 -46.91691,-13.10034 -66.16499,-24.24366 z" ></path><path style="fill:#8dbd9b;stroke:none;fill-opacity:1" id="path3823" d="m 185.4676,341.09595 c -5.24793,-41.17959 43.5274,-125.94493 141.82182,-71.09691 -64.64882,14.8747 -108.12281,37.3832 -141.82182,71.09691 z" ></path><path style="fill:#6cab7f;stroke:none;fill-opacity:1" id="path3825" d="m 250.90562,296.02841 c 25.50022,-8.33989 43.74892,-18.49598 75.10317,-25.5243 54.97782,-34.74037 -29.70035,-40.9468 -75.10317,25.5243 z" ></path><path style="fill:#ce7668;stroke:none;fill-opacity:1" id="path3839" d="m 253.54829,425.05745 -36.36549,9.09137 c -5.80699,2.56123 -10.64884,0.77933 -18.18275,11.11168 l -31.31473,44.44671 c -4.13951,11.25689 -13.09729,24.11986 10.10153,26.26397 l 98.99495,21.2132 5.05076,-27.27411 -84.85281,-15.15229 27.27412,-37.37565 85.86296,-21.2132 -10.10152,28.28427 c -4.59833,12.04092 3.72362,12.15542 11.11167,13.13198 l 71.72083,21.21321 4.04061,-20.20305 -60.60915,-14.14214 11.11168,-38.3858 c 1.40481,-9.91068 -8.94078,-11.07611 -20.86658,-9.56055 z" ></path><path style="fill:#e7bd92;stroke:none;fill-opacity:1" id="path3837" d="m 258.09397,409.65262 c -2.13117,7.6565 -3.89752,13.8537 -5.55583,19.61876 6.23402,2.65171 19.22261,8.94785 26.43728,0.6425 -3.82609,-6.66957 -5.18663,-13.33915 -7.24439,-20.00872 z" ></path><path style="fill:#1a1a1a;stroke:none" id="path3948" d="m 218.21429,554.86218 c -8.60669,-31.89815 -14.86464,-78.74562 23.92857,-126.78571 -25.87029,33.57979 -34.21691,77.059 -23.92857,126.78571 z" ></path><path style="fill:#1a1a1a;stroke:none" id="path3950" d="m 261.62951,543.2453 c 51.35056,-28.45225 51.21479,-74.06661 37.37564,-124.24876 20.55396,61.51082 7.78438,102.73775 -37.37564,124.24876 z" ></path><path style="fill:#9eb4ba;stroke:none;fill-opacity:1" id="path3835" d="m 278.8021,477.58538 16.16244,38.3858 -12.12183,58.58885 54.54824,3.03046 21.2132,-33.33504 46.46702,7.07107 8.08122,-27.27412 18.18275,-21.2132 -32.32488,-22.22336 0,-47.47717 -22.22336,17.1726 -13.13198,26.26396 -34.34519,-11.11168 -4.04061,20.20305 z" ></path><path style="fill:#e7bd92;stroke:none;fill-opacity:1" id="path3865" d="m 287.14286,513.79075 c 35.2235,4.52367 10.92659,25.01562 -2.85715,20.35715 -18.00691,-8.09325 -5.67077,-14.09388 2.85715,-20.35715 z" ></path><path style="fill:#e7bd92;stroke:none;fill-opacity:1" id="path3867" d="m 397.67857,469.86218 c -8.38243,23.04244 7.66187,17.80129 15.89286,21.60714 1.04043,-9.95805 4.21789,-20.84525 -15.89286,-21.60714 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3952" d="m 377.29198,450.31126 9.84898,62.882 -22.98097,-36.87057 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3954" d="m 329.81481,466.22117 16.92005,58.58885 -21.46574,-39.64849 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3956" d="m 358.35162,544.00291 -29.54697,-21.2132 8.5863,54.80078 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3960" d="m 227.14286,527.00504 44.64285,6.78571 -45.35714,-2.14285 z" ></path><path style="fill:#ce7668;stroke:none;fill-opacity:1" id="path3962" d="m 210.89286,497.00504 6.96428,1.60714 -0.35714,25.89286 -7.85714,-1.96429 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3964" d="m 273.92857,567.00504 -4.64286,8.92857 -12.85714,4.28571 -0.71428,7.5 -11.42858,3.92858 -0.71428,-7.14286 -15,5.71428 -1.78572,-3.21428 0.35715,-8.92857 z" ></path><path style="fill:#1a1a1a;stroke:none" id="path3904" d="m 263.13196,540.86182 12.14286,24.28572 -46.42857,18.57143 -11.42857,-29.28572 z" ></path><path style="fill:#1a1a1a;stroke:none" id="path3924" d="m 216.80399,556.88236 0.63135,-2.39911 57.70496,10.48033 -0.88388,2.39911 z" ></path><path style="fill:#333333;stroke:none" id="path3904-7" d="m 262.41769,543.00468 12.14286,24.28572 -46.42857,18.57143 -11.42857,-29.28572 z" ></path><path style="fill:#1a1a1a;fill-opacity:1;stroke:none" id="path3926" transform="translate(21.607143,-28.75)" d="m 233.39285,592.89789 a 10.625,9.4642859 0 1 1 -21.25,0 10.625,9.4642859 0 1 1 21.25,0 z" ></path><path style="fill:#666666;fill-opacity:1;stroke:none" id="path3926-7" transform="translate(21.160719,-27.14285)" d="m 233.39285,592.89789 a 10.625,9.4642859 0 1 1 -21.25,0 10.625,9.4642859 0 1 1 21.25,0 z" ></path><path style="fill:#999999;stroke:none" id="path3946" d="m 235.44643,568.34432 c 1.683,4.74813 5.90631,6.47208 12.58928,5.26786 -6.02388,0.38799 -9.63226,-1.86716 -12.58928,-5.26786 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3966" d="m 335.87572,389.95465 c -13.0524,-3.03313 -28.88796,-4.50074 -21.2132,-19.1929 0.97154,12.90379 10.24541,16.95177 21.2132,19.1929 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3968" d="M 216.42857,269.50504 C 171.08734,315.32935 172.15498,394.28313 258.39286,414.68361 184.9249,374.58139 200.8989,320.73196 216.42857,269.50504 z" ></path><path style="opacity:0.07999998;fill:#1a1a1a;stroke:none" id="path3970" d="M 257.32143,414.32647 252.5,428.79075 c 1.80673,1.42857 6.48057,2.85715 10.53571,4.28572 -4.81963,-6.88385 -4.31167,-12.60919 -5.71428,-18.75 z" ></path></g ></g></svg>'
 
-},{}],18:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
 var dom = require('./dom')
 
 module.exports = function(evt) {
@@ -701,7 +1010,7 @@ module.exports = function(evt) {
 
 
 
-},{"./dom":19}],19:[function(require,module,exports){
+},{"./dom":20}],20:[function(require,module,exports){
 exports.byId = function(id) {
 	return document.getElementById(id)
 }
@@ -725,7 +1034,7 @@ exports.clearById = function(id) {
 	while (el.firstChild) {el.removeChild(el.firstChild)}
 }
 
-},{}],20:[function(require,module,exports){
+},{}],21:[function(require,module,exports){
 var searchPlace = require('./comp/search-place')
 var choosePlace = require('./comp/choose-place')
 var mapMenu = require('./comp/map-menu')
@@ -744,6 +1053,9 @@ module.exports = function(config) {
 	})
 	e.on('place-search-err', function(err) {
 		console.log('place-search-err', err)
+	})
+	e.on('place-search-none', function() {
+		searchPlace(e, 'Could not find this city, try another spelling')	
 	})
 	e.on('place-search-success', function(data) { 
 		choosePlace(e, data)
@@ -816,7 +1128,7 @@ module.exports = function(config) {
 
 
 
-},{"./api/get-overpass":1,"./comp/choose-place":10,"./comp/map-menu":11,"./comp/search-place":16,"./map/init":24}],21:[function(require,module,exports){
+},{"./api/get-overpass":2,"./comp/choose-place":11,"./comp/map-menu":12,"./comp/search-place":17,"./map/init":25}],22:[function(require,module,exports){
 var types = ['aquarium',
 'artwork',
 'attraction',
@@ -851,7 +1163,7 @@ function createIcon(n) {
 	return icon
 }
 
-},{}],22:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 var createPopup = require('./create-popup')
 
 module.exports = function(mapData, layerName) {
@@ -868,7 +1180,7 @@ module.exports = function(mapData, layerName) {
 	})
 }
 
-},{"./create-popup":23}],23:[function(require,module,exports){
+},{"./create-popup":24}],24:[function(require,module,exports){
 function createPopup(props) {
 	var html = '<p class="popup-main">'
 		+ '<span class="popup-title">' + props.name + '</span><br/>'
@@ -885,7 +1197,7 @@ function createPopup(props) {
 
 module.exports = function(properties) { return createPopup(properties) }
 
-},{}],24:[function(require,module,exports){
+},{}],25:[function(require,module,exports){
 var createIcons = require('./create-icons')
 var createLayer = require('./create-layer')
 
@@ -893,7 +1205,7 @@ module.exports = function(divId, pt, config) {
 	var evt = config.evt
 	var mapData = { layers: {}, data: {}, icons: createIcons() }
 	var map = L.map(divId)
-	map.setView(new L.LatLng(pt[1], pt[0]), 14)
+	map.setView(new L.LatLng(pt[1], pt[0]), 15)
 	mapData.map = map
 	config.mapData = mapData
 
@@ -945,7 +1257,7 @@ function rmLayers(mapData, callback) {
 	callback()
 }
 
-},{"./create-icons":21,"./create-layer":22}],25:[function(require,module,exports){
+},{"./create-icons":22,"./create-layer":23}],26:[function(require,module,exports){
 var Emitter = require('events').EventEmitter
 var events = require('./lib/events')
 var Config = require('./lib/config')
@@ -963,307 +1275,4 @@ window.onload = function() {
 
 
 
-},{"./lib/config":18,"./lib/events":20,"events":26}],26:[function(require,module,exports){
-// Copyright Joyent, Inc. and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-function EventEmitter() {
-  this._events = this._events || {};
-  this._maxListeners = this._maxListeners || undefined;
-}
-module.exports = EventEmitter;
-
-// Backwards-compat with node 0.10.x
-EventEmitter.EventEmitter = EventEmitter;
-
-EventEmitter.prototype._events = undefined;
-EventEmitter.prototype._maxListeners = undefined;
-
-// By default EventEmitters will print a warning if more than 10 listeners are
-// added to it. This is a useful default which helps finding memory leaks.
-EventEmitter.defaultMaxListeners = 10;
-
-// Obviously not all Emitters should be limited to 10. This function allows
-// that to be increased. Set to zero for unlimited.
-EventEmitter.prototype.setMaxListeners = function(n) {
-  if (!isNumber(n) || n < 0 || isNaN(n))
-    throw TypeError('n must be a positive number');
-  this._maxListeners = n;
-  return this;
-};
-
-EventEmitter.prototype.emit = function(type) {
-  var er, handler, len, args, i, listeners;
-
-  if (!this._events)
-    this._events = {};
-
-  // If there is no 'error' event listener then throw.
-  if (type === 'error') {
-    if (!this._events.error ||
-        (isObject(this._events.error) && !this._events.error.length)) {
-      er = arguments[1];
-      if (er instanceof Error) {
-        throw er; // Unhandled 'error' event
-      }
-      throw TypeError('Uncaught, unspecified "error" event.');
-    }
-  }
-
-  handler = this._events[type];
-
-  if (isUndefined(handler))
-    return false;
-
-  if (isFunction(handler)) {
-    switch (arguments.length) {
-      // fast cases
-      case 1:
-        handler.call(this);
-        break;
-      case 2:
-        handler.call(this, arguments[1]);
-        break;
-      case 3:
-        handler.call(this, arguments[1], arguments[2]);
-        break;
-      // slower
-      default:
-        len = arguments.length;
-        args = new Array(len - 1);
-        for (i = 1; i < len; i++)
-          args[i - 1] = arguments[i];
-        handler.apply(this, args);
-    }
-  } else if (isObject(handler)) {
-    len = arguments.length;
-    args = new Array(len - 1);
-    for (i = 1; i < len; i++)
-      args[i - 1] = arguments[i];
-
-    listeners = handler.slice();
-    len = listeners.length;
-    for (i = 0; i < len; i++)
-      listeners[i].apply(this, args);
-  }
-
-  return true;
-};
-
-EventEmitter.prototype.addListener = function(type, listener) {
-  var m;
-
-  if (!isFunction(listener))
-    throw TypeError('listener must be a function');
-
-  if (!this._events)
-    this._events = {};
-
-  // To avoid recursion in the case that type === "newListener"! Before
-  // adding it to the listeners, first emit "newListener".
-  if (this._events.newListener)
-    this.emit('newListener', type,
-              isFunction(listener.listener) ?
-              listener.listener : listener);
-
-  if (!this._events[type])
-    // Optimize the case of one listener. Don't need the extra array object.
-    this._events[type] = listener;
-  else if (isObject(this._events[type]))
-    // If we've already got an array, just append.
-    this._events[type].push(listener);
-  else
-    // Adding the second element, need to change to array.
-    this._events[type] = [this._events[type], listener];
-
-  // Check for listener leak
-  if (isObject(this._events[type]) && !this._events[type].warned) {
-    var m;
-    if (!isUndefined(this._maxListeners)) {
-      m = this._maxListeners;
-    } else {
-      m = EventEmitter.defaultMaxListeners;
-    }
-
-    if (m && m > 0 && this._events[type].length > m) {
-      this._events[type].warned = true;
-      console.error('(node) warning: possible EventEmitter memory ' +
-                    'leak detected. %d listeners added. ' +
-                    'Use emitter.setMaxListeners() to increase limit.',
-                    this._events[type].length);
-      if (typeof console.trace === 'function') {
-        // not supported in IE 10
-        console.trace();
-      }
-    }
-  }
-
-  return this;
-};
-
-EventEmitter.prototype.on = EventEmitter.prototype.addListener;
-
-EventEmitter.prototype.once = function(type, listener) {
-  if (!isFunction(listener))
-    throw TypeError('listener must be a function');
-
-  var fired = false;
-
-  function g() {
-    this.removeListener(type, g);
-
-    if (!fired) {
-      fired = true;
-      listener.apply(this, arguments);
-    }
-  }
-
-  g.listener = listener;
-  this.on(type, g);
-
-  return this;
-};
-
-// emits a 'removeListener' event iff the listener was removed
-EventEmitter.prototype.removeListener = function(type, listener) {
-  var list, position, length, i;
-
-  if (!isFunction(listener))
-    throw TypeError('listener must be a function');
-
-  if (!this._events || !this._events[type])
-    return this;
-
-  list = this._events[type];
-  length = list.length;
-  position = -1;
-
-  if (list === listener ||
-      (isFunction(list.listener) && list.listener === listener)) {
-    delete this._events[type];
-    if (this._events.removeListener)
-      this.emit('removeListener', type, listener);
-
-  } else if (isObject(list)) {
-    for (i = length; i-- > 0;) {
-      if (list[i] === listener ||
-          (list[i].listener && list[i].listener === listener)) {
-        position = i;
-        break;
-      }
-    }
-
-    if (position < 0)
-      return this;
-
-    if (list.length === 1) {
-      list.length = 0;
-      delete this._events[type];
-    } else {
-      list.splice(position, 1);
-    }
-
-    if (this._events.removeListener)
-      this.emit('removeListener', type, listener);
-  }
-
-  return this;
-};
-
-EventEmitter.prototype.removeAllListeners = function(type) {
-  var key, listeners;
-
-  if (!this._events)
-    return this;
-
-  // not listening for removeListener, no need to emit
-  if (!this._events.removeListener) {
-    if (arguments.length === 0)
-      this._events = {};
-    else if (this._events[type])
-      delete this._events[type];
-    return this;
-  }
-
-  // emit removeListener for all listeners on all events
-  if (arguments.length === 0) {
-    for (key in this._events) {
-      if (key === 'removeListener') continue;
-      this.removeAllListeners(key);
-    }
-    this.removeAllListeners('removeListener');
-    this._events = {};
-    return this;
-  }
-
-  listeners = this._events[type];
-
-  if (isFunction(listeners)) {
-    this.removeListener(type, listeners);
-  } else {
-    // LIFO order
-    while (listeners.length)
-      this.removeListener(type, listeners[listeners.length - 1]);
-  }
-  delete this._events[type];
-
-  return this;
-};
-
-EventEmitter.prototype.listeners = function(type) {
-  var ret;
-  if (!this._events || !this._events[type])
-    ret = [];
-  else if (isFunction(this._events[type]))
-    ret = [this._events[type]];
-  else
-    ret = this._events[type].slice();
-  return ret;
-};
-
-EventEmitter.listenerCount = function(emitter, type) {
-  var ret;
-  if (!emitter._events || !emitter._events[type])
-    ret = 0;
-  else if (isFunction(emitter._events[type]))
-    ret = 1;
-  else
-    ret = emitter._events[type].length;
-  return ret;
-};
-
-function isFunction(arg) {
-  return typeof arg === 'function';
-}
-
-function isNumber(arg) {
-  return typeof arg === 'number';
-}
-
-function isObject(arg) {
-  return typeof arg === 'object' && arg !== null;
-}
-
-function isUndefined(arg) {
-  return arg === void 0;
-}
-
-},{}]},{},[25]);
+},{"./lib/config":19,"./lib/events":21,"events":1}]},{},[26]);
